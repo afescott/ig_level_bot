@@ -8,9 +8,9 @@
 //!
 //! Create a file named `STOP` (or `--kill-file`) to close any position and halt in `ig` mode.
 
+mod args;
 mod bars;
 mod ig;
-mod journal;
 mod levels;
 mod mock;
 mod strategy;
@@ -33,8 +33,12 @@ impl Flags {
         let mut map = HashMap::new();
         let mut it = std::env::args().skip(1);
         while let Some(k) = it.next() {
-            let Some(name) = k.strip_prefix("--") else { bail!("unexpected argument `{k}`") };
-            let v = it.next().with_context(|| format!("missing value for `{k}`"))?;
+            let Some(name) = k.strip_prefix("--") else {
+                bail!("unexpected argument `{k}`")
+            };
+            let v = it
+                .next()
+                .with_context(|| format!("missing value for `{k}`"))?;
             map.insert(name.to_string(), v);
         }
         Ok(Self(map))
@@ -42,13 +46,18 @@ impl Flags {
 
     fn get<T: FromStr>(&self, key: &str, default: T) -> anyhow::Result<T> {
         match self.0.get(key) {
-            Some(v) => v.parse().map_err(|_| anyhow::anyhow!("invalid value for --{key}: `{v}`")),
+            Some(v) => v
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid value for --{key}: `{v}`")),
             None => Ok(default),
         }
     }
 
     fn str(&self, key: &str, default: &str) -> String {
-        self.0.get(key).cloned().unwrap_or_else(|| default.to_string())
+        self.0
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| default.to_string())
     }
 }
 
@@ -110,12 +119,17 @@ impl Runner {
     }
 
     async fn close_now(&mut self, t: &Tick, why: &str) {
-        let Some(p) = self.engine.position.clone() else { return };
+        let Some(p) = self.engine.position.clone() else {
+            return;
+        };
         let px = match (self.execute, self.ig.as_mut(), self.deal_id.clone()) {
             (true, Some(ig), Some(id)) => match ig.close(&id, p.dir, p.size).await {
                 Ok(level) => level,
                 Err(e) => {
-                    self.error(t.ts_ms, &format!("close failed, position still open at IG: {e:#}"));
+                    self.error(
+                        t.ts_ms,
+                        &format!("close failed, position still open at IG: {e:#}"),
+                    );
                     return;
                 }
             },
@@ -150,8 +164,16 @@ impl Runner {
                     match ig.is_open(&id).await {
                         // Exact fill isn't fetched; book it at whichever resting level is nearer.
                         Ok(false) => {
-                            let px = if (t.mid() - p.stop).abs() < (t.mid() - p.limit).abs() { p.stop } else { p.limit };
-                            self.log_close(t.ts_ms, px, "closed by IG stop/limit (level approximate)");
+                            let px = if (t.mid() - p.stop).abs() < (t.mid() - p.limit).abs() {
+                                p.stop
+                            } else {
+                                p.limit
+                            };
+                            self.log_close(
+                                t.ts_ms,
+                                px,
+                                "closed by IG stop/limit (level approximate)",
+                            );
                         }
                         Ok(true) => {}
                         Err(e) => self.error(t.ts_ms, &format!("position check failed: {e:#}")),
@@ -162,7 +184,13 @@ impl Runner {
 
         for action in self.engine.on_tick(&t) {
             match action {
-                Action::Open { dir, size, stop, limit, reason } => {
+                Action::Open {
+                    dir,
+                    size,
+                    stop,
+                    limit,
+                    reason,
+                } => {
                     let fill = match (self.execute, self.ig.as_mut()) {
                         (true, Some(ig)) => match ig.open(dir, size, stop, limit).await {
                             Ok(o) => {
@@ -190,8 +218,12 @@ impl Runner {
                     });
                 }
                 Action::AmendStop { stop, reason } => {
-                    let Some(p) = self.engine.position.clone() else { continue };
-                    if let (true, Some(ig), Some(id)) = (self.execute, self.ig.as_mut(), self.deal_id.clone()) {
+                    let Some(p) = self.engine.position.clone() else {
+                        continue;
+                    };
+                    if let (true, Some(ig), Some(id)) =
+                        (self.execute, self.ig.as_mut(), self.deal_id.clone())
+                    {
                         if let Err(e) = ig.amend(&id, stop, p.limit).await {
                             self.error(t.ts_ms, &format!("stop amend failed: {e:#}"));
                             continue;
@@ -253,7 +285,10 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         "ig" => {
-            let mut ig = IgClient::from_env(f.str("epic", "IX.D.FTSE.DAILY.IP"), f.str("currency", "GBP"))?;
+            let mut ig = IgClient::from_env(
+                f.str("epic", "IX.D.FTSE.DAILY.IP"),
+                f.str("currency", "GBP"),
+            )?;
             ig.login().await.context("IG demo login")?;
             runner.execute = f.get::<u8>("execute", 0)? == 1;
             runner.ig = Some(ig);
@@ -261,12 +296,17 @@ async fn main() -> anyhow::Result<()> {
                 "IG demo: epic={} execute={} (orders {})",
                 f.str("epic", "IX.D.FTSE.DAILY.IP"),
                 runner.execute,
-                if runner.execute { "sent to IG DEMO with server-side stops" } else { "simulated on IG prices" }
+                if runner.execute {
+                    "sent to IG DEMO with server-side stops"
+                } else {
+                    "simulated on IG prices"
+                }
             );
             let kill = PathBuf::from(f.str("kill-file", "STOP"));
             let poll = Duration::from_secs(f.get("poll-secs", 3)?);
             let run_for: u64 = f.get("run-seconds", 0)?;
-            let deadline = (run_for > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(run_for));
+            let deadline =
+                (run_for > 0).then(|| tokio::time::Instant::now() + Duration::from_secs(run_for));
             let mut interval = tokio::time::interval(poll);
             let mut last: Option<Tick> = None;
             loop {
